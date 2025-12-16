@@ -2,218 +2,169 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ThreeJS 爱心手势控制</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>ThreeJS AI 手势控制爱心</title>
     <style>
-        body {
-            margin: 0;
-            overflow: hidden; /* 防止滚动条 */
-            background-color: #000;
-            touch-action: none; /* 禁止默认触摸动作 */
-        }
-
-        #canvas-container {
-            width: 100vw;
-            height: 100vh;
-            position: absolute;
-            top: 0;
-            left: 0;
-            z-index: 1;
-        }
-
-        /* 右下角的手势控制区 */
-        #gesture-pad {
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            width: 180px;
-            height: 180px;
-            background: rgba(255, 255, 255, 0.15);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            border-radius: 20px;
-            backdrop-filter: blur(5px);
-            z-index: 10;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            color: #fff;
-            font-family: sans-serif;
-            font-size: 14px;
-            text-align: center;
-            user-select: none; /* 禁止文字选中 */
-            pointer-events: auto; /* 允许接收触摸事件 */
-        }
-
-        #gesture-pad p {
-            pointer-events: none; /* 文字不阻挡触摸 */
-            opacity: 0.8;
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; z-index: 1; }
+        /* 用来给 AI 看的视频元素，隐藏起来不显示 */
+        #input-video { display: none; position: absolute; top: 0; left: 0; z-index: -1; }
+        
+        /* 加载提示 */
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #fff; font-family: sans-serif; text-align: center; z-index: 20;
+            pointer-events: none;
         }
     </style>
 </head>
 <body>
-
+    <div id="loading">正在启动摄像头和 AI 模型...<br>请允许相机权限<br>首次加载可能需要十几秒</div>
     <div id="canvas-container"></div>
-
-    <div id="gesture-pad">
-        <p>在此区域<br>双指缩放<br>单指旋转</p>
-    </div>
+    <video id="input-video" playsinline webkit-playsinline></video>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 
     <script>
-        // --- 1. 初始化场景 ---
+        const loadingDiv = document.getElementById('loading');
+
+        // ================= START: Three.js 3D 场景设置 (和之前一样) =================
         const scene = new THREE.Scene();
-        // 添加一点雾化效果，让远处的爱心变暗
         scene.fog = new THREE.FogExp2(0x000000, 0.002);
-
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 2000);
-        camera.position.z = 500; // 初始相机距离
-
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        const cameraThree = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 2000);
+        cameraThree.position.z = 500;
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.getElementById('canvas-container').appendChild(renderer.domElement);
 
-        // --- 2. 制作爱心材质 (使用 Canvas 绘制) ---
         function createHeartTexture() {
             const canvas = document.createElement('canvas');
-            canvas.width = 64;
-            canvas.height = 64;
+            canvas.width = 64; canvas.height = 64;
             const ctx = canvas.getContext('2d');
-            
-            // 绘制爱心路径
             ctx.beginPath();
             const x = 32, y = 32;
             ctx.moveTo(x, y + 15);
             ctx.bezierCurveTo(x + 20, y - 10, x + 30, y - 25, x, y - 25);
             ctx.bezierCurveTo(x - 30, y - 25, x - 20, y - 10, x, y + 15);
-            ctx.fillStyle = '#FF0033'; // 鲜艳的红色
-            ctx.fill();
-
-            const texture = new THREE.CanvasTexture(canvas);
-            return texture;
+            ctx.fillStyle = '#FF0033'; ctx.fill();
+            return new THREE.CanvasTexture(canvas);
         }
 
-        // --- 3. 创建粒子系统 ---
         const geometry = new THREE.BufferGeometry();
-        const particlesCount = 1000; // 粒子数量
         const positions = [];
-        const scales = []; // 让爱心大小不一
-
-        for (let i = 0; i < particlesCount; i++) {
-            // 在空间中随机分布
+        for (let i = 0; i < 1000; i++) {
             positions.push((Math.random() * 2 - 1) * 800);
             positions.push((Math.random() * 2 - 1) * 800);
             positions.push((Math.random() * 2 - 1) * 800);
-            scales.push(Math.random() * 20 + 10); // 大小范围
         }
-
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-        // 注意：Three.js r128 原生不支持 geometry attribute 直接控制 point size，
-        // 这里为了简化代码，我们在材质里统一设置大小，或者通过 shader。
-        // 为了最简单实现，我们使用统一材质大小，但利用 map 的透明边缘让它们看起来融合。
-
         const material = new THREE.PointsMaterial({
-            size: 30, 
-            map: createHeartTexture(),
-            transparent: true,
-            opacity: 0.9,
-            depthWrite: false, // 防止粒子相互遮挡产生的黑边
-            blending: THREE.AdditiveBlending, // 发光叠加效果
-            color: 0xff0000
+            size: 30, map: createHeartTexture(), transparent: true, opacity: 0.9,
+            depthWrite: false, blending: THREE.AdditiveBlending, color: 0xff0000
         });
-
         const particles = new THREE.Points(geometry, material);
         scene.add(particles);
 
-        // --- 4. 动画循环 ---
-        function animate() {
-            requestAnimationFrame(animate);
-            
-            // 让粒子群稍微自动转动一点点，增加灵动感
-            particles.rotation.y += 0.001;
-            particles.rotation.x += 0.0005;
-
-            renderer.render(scene, camera);
-        }
-        animate();
-
-        // --- 5. 处理窗口大小变化 ---
         window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
+            cameraThree.aspect = window.innerWidth / window.innerHeight;
+            cameraThree.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
+        // ================= END: Three.js 设置 =================
 
-        // --- 6. 右下角手势控制逻辑 ---
-        const pad = document.getElementById('gesture-pad');
-        
-        let startDist = 0; // 双指初始距离
-        let startScale = 1; // 初始缩放比例
-        let currentScale = 1; // 当前缩放比例
-        
-        // 用于单指旋转
-        let startX = 0;
-        let startY = 0;
 
-        // 获取两点间距离的函数
-        function getDistance(touch1, touch2) {
-            const dx = touch1.pageX - touch2.pageX;
-            const dy = touch1.pageY - touch2.pageY;
-            return Math.hypot(dx, dy);
+        // ================= START: AI 手势识别逻辑 =================
+        const videoElement = document.getElementById('input-video');
+        let targetScale = 1; // 目标缩放值
+        let smoothedScale = 1; // 平滑后的当前缩放值 (用于防止抖动)
+        let cameraStarted = false;
+
+        // 当 AI 计算出结果时触发的函数
+        function onResults(results) {
+            if (!cameraStarted) {
+                loadingDiv.style.display = 'none'; // 第一次识别成功，隐藏加载提示
+                cameraStarted = true;
+            }
+
+            // 如果画面中发现了手
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                // 取第一只手
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // 获取关键点：4号是大拇指尖，8号是食指尖
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+
+                // 计算两点在平面上的欧几里得距离 (勾股定理)
+                // MediaPipe 返回的坐标是 0.0 到 1.0 的比例值
+                const dx = thumbTip.x - indexTip.x;
+                const dy = thumbTip.y - indexTip.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                // --- 核心算法：把距离映射为缩放比例 ---
+                // 经验值：捏合时距离约为 0.03，张开时约为 0.3
+                // 我们用一个简单的乘数来调整感应灵敏度
+                let newScale = distance * 8; // 乘以8作为系数测试
+
+                // 限制一下最大最小范围，防止太小看不见或太大穿模
+                newScale = Math.max(0.3, Math.min(newScale, 5.0));
+                
+                targetScale = newScale;
+            }
         }
 
-        pad.addEventListener('touchstart', (e) => {
-            e.preventDefault(); // 阻止浏览器默认行为
-
-            if (e.touches.length === 2) {
-                // 双指：准备缩放
-                startDist = getDistance(e.touches[0], e.touches[1]);
-                startScale = particles.scale.x; // 记录当前物体的缩放值
-            } else if (e.touches.length === 1) {
-                // 单指：准备旋转
-                startX = e.touches[0].pageX;
-                startY = e.touches[0].pageY;
-            }
-        }, { passive: false });
-
-        pad.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-
-            if (e.touches.length === 2) {
-                // --- 双指缩放逻辑 ---
-                const dist = getDistance(e.touches[0], e.touches[1]);
-                if (startDist > 0) {
-                    const ratio = dist / startDist;
-                    // 限制一下缩放范围，防止太小消失或太大穿模
-                    let newScale = startScale * ratio;
-                    newScale = Math.max(0.1, Math.min(newScale, 5.0));
-                    
-                    // 应用缩放
-                    particles.scale.set(newScale, newScale, newScale);
-                }
-            } else if (e.touches.length === 1) {
-                // --- 单指旋转逻辑 (额外赠送的功能) ---
-                const dx = e.touches[0].pageX - startX;
-                const dy = e.touches[0].pageY - startY;
-                
-                particles.rotation.y += dx * 0.005;
-                particles.rotation.x += dy * 0.005;
-                
-                // 更新起始点，让旋转更平滑
-                startX = e.touches[0].pageX;
-                startY = e.touches[0].pageY;
-            }
-        }, { passive: false });
-
-        // --- 兼容 PC 鼠标滚轮缩放 (方便调试) ---
-        pad.addEventListener('wheel', (e) => {
-            e.preventDefault();
-            let scaleFactor = 1 + (e.deltaY * -0.001);
-            let newScale = particles.scale.x * scaleFactor;
-            newScale = Math.max(0.1, Math.min(newScale, 5.0));
-            particles.scale.set(newScale, newScale, newScale);
+        // 初始化 MediaPipe Hands 模型
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        hands.setOptions({
+            maxNumHands: 1, // 我们只需要识别一只手
+            modelComplexity: 0, // 使用轻量级模型以提高手机性能
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
         });
+        hands.onResults(onResults);
+
+        // 使用 MediaPipe 提供的相机工具启动摄像头
+        // 这里的 facingMode: 'user' 指定使用前置摄像头
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640, // 降低分辨率以提高性能
+            height: 480,
+            facingMode: 'user' 
+        });
+        
+        // 启动相机，这会触发浏览器的权限请求弹窗
+        camera.start().catch(err => {
+            loadingDiv.innerHTML = "无法启动摄像头。<br>请检查权限或确认使用 HTTPS 访问。";
+            console.error(err);
+        });
+        // ================= END: AI 手势识别逻辑 =================
+
+
+        // ================= 动画循环 =================
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 平滑插值算法 (Lerp)：让缩放不那么生硬，带有阻尼感
+            // 每一帧只向目标值靠近 10%
+            smoothedScale += (targetScale - smoothedScale) * 0.1;
+            
+            // 应用缩放
+            particles.scale.set(smoothedScale, smoothedScale, smoothedScale);
+
+            // 缓慢自动旋转
+            particles.rotation.y += 0.002;
+            particles.rotation.x += 0.001;
+
+            renderer.render(scene, cameraThree);
+        }
+        animate();
 
     </script>
 </body>
